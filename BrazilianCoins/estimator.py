@@ -259,13 +259,13 @@ def next():
 
 if __name__=='__main__':
 	
-	x=estimator.init()
-	estimator.train(x)
+	x=init()
+	# train(x)
 
 	for i in range(100):
 		img,label=next()
 
-		print predict(est,img)
+		print predict(x,img)
 
 		
 
