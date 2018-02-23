@@ -1,10 +1,12 @@
-import cv2,os
+import cv2,os,random
 import numpy as np
 import tensorflow as tf
 from keras.utils.np_utils import to_categorical
 #https://www.kaggle.com/gbonesso/deep-learning-cnn/data
 
 tf.logging.set_verbosity(tf.logging.DEBUG)
+label_dict,id_to_name1={},[]
+base='/Users/ckl/dl/data/coins/single/'
 
 def extract_coins(img,toSize=100):
 	cimg=cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
@@ -42,22 +44,30 @@ def extract_coins(img,toSize=100):
 
 	return np.array(frames),radiuses
 
+def read_extract(path,p):
+	img=cv2.imread(path+p,cv2.IMREAD_COLOR)
+
+	ready,_=extract_coins(img)
+	if ready is not None and len(ready)>0:
+		return ready[0],p.split('_')[0]
+	return None,None
+
 def readFiles(path):
-	imgs,labels=[],[]
-	cnt=0
+	cnt,idx=0,-1
+	scaled_raw,scaled_labels,id_to_name2=[],[],{}
 	for p in os.listdir(path):
 		if p[-4:]=='.jpg':
-			imgs.append(cv2.imread(path+p,cv2.IMREAD_COLOR))
-			label=p.split('_')[0]
-			labels.append(label)
-			if label=='50': 
-				cnt=cnt+1
+			img,label=read_extract(path,p)
+			if img is not None:
+				scaled_raw.append(img)
+				scaled_labels.append(label)
+				id_to_name2[len(scaled_raw)-1]=p
 	print 'read files end.'
-	return np.array(imgs),np.array(labels)	
+	imgs,labels=np.array(scaled_raw),np.array(scaled_labels)
+	return imgs,labels,id_to_name2
 
 def formatLabels(labels):
 	label_classes=set(labels)
-	label_dict={}
 	for v_i, v in enumerate(label_classes):
 		label_dict[v]=v_i
 
@@ -68,9 +78,7 @@ def formatLabels(labels):
 	return res
 
 def buildEstimator(features,labels,mode):
-	print '^^^^^^',features['x']
 	imgs=tf.reshape(features['x'],[-1,100,100,3])
-	print '====',imgs
 	conv1=tf.layers.conv2d(# 100*100*3*32
 		inputs=imgs,
 		filters=32,
@@ -79,7 +87,6 @@ def buildEstimator(features,labels,mode):
 		activation=tf.nn.relu
 	)
 	pool1=tf.layers.max_pooling2d(inputs=conv1,pool_size=(2,2),data_format='channels_last',strides=(2,2))# 50*50*3*32
-	print '****',pool1
 
 	conv2=tf.layers.conv2d(
 		inputs=pool1,
@@ -98,13 +105,11 @@ def buildEstimator(features,labels,mode):
 		activation=tf.nn.relu
 	)
 	pool3=tf.layers.max_pooling2d(inputs=conv3,pool_size=(2,2),data_format='channels_last', strides=(2,2))# 25*25*3*64??
-	print '$$$$$',pool3
+	
 	pool3_flat=tf.reshape(pool3,[-1,12*12*64])
 	print pool3_flat
-	print '#####',pool3_flat
 
 	dense1=tf.layers.dense(inputs=pool3_flat,units=64)
-	print '@@@@@',dense1
 
 	batch_norm1=tf.layers.batch_normalization(
 		inputs=dense1,
@@ -112,34 +117,31 @@ def buildEstimator(features,labels,mode):
 	)
 
 	relu1=tf.nn.relu(batch_norm1)
-	print '~~~~~~~',relu1
 
 	
 	dropout=tf.layers.dropout(inputs=relu1, rate=0.75)
 	logits=tf.layers.dense(inputs=dropout,units=5)
 
-	print '!!!!!',logits
-
-	predictions={
-		'classes':tf.argmax(logits, axis=1),
-		'probabilities':tf.nn.softmax(logits, name='softmax_tensor')
-	}
+	print mode,mode==tf.estimator.ModeKeys.PREDICT
 
 	if mode==tf.estimator.ModeKeys.PREDICT:
+		predictions={
+			'classes':tf.argmax(logits, axis=1),
+			'probabilities':tf.nn.softmax(logits, name='softmax_tensor')
+		}
+		print predictions
 		return tf.estimator.EstimatorSpec(mode=mode,predictions=predictions)
 	
 	if mode==tf.estimator.ModeKeys.TRAIN:
 		optimizer=tf.train.AdamOptimizer(learning_rate=1e-4)
 
 		logits=tf.nn.softmax(logits)
-		print '222!!!!!',logits
 		loss=tf.losses.sparse_softmax_cross_entropy(labels=labels,logits=logits)
 
 		accuracy=tf.metrics.accuracy(labels=labels, predictions=tf.argmax(logits,axis=1))
 		tf.identity(accuracy[1], name='train_accuracy')
 		tf.summary.scalar('train_accuracy',accuracy[1])
 		
-		print '=============='
 		return tf.estimator.EstimatorSpec(mode=tf.estimator.ModeKeys.TRAIN,loss=loss,
 			train_op=optimizer.minimize(loss=loss,global_step=tf.train.get_global_step())
 		)
@@ -151,6 +153,8 @@ def build2(scaled,y_binary):
 	from keras.preprocessing.image import ImageDataGenerator, array_to_img, img_to_array, load_img
 	from keras.utils.np_utils import to_categorical
 	from keras.layers.normalization import BatchNormalization
+
+	y_binary=to_categorical(y_binary)
 
 	model = Sequential()
 	model.add(Conv2D(32, (3, 3), input_shape=(100, 100, 3)))
@@ -188,44 +192,81 @@ def build2(scaled,y_binary):
 		verbose=1
 	)
 
-if __name__=='__main__':
-	imgs, labels=readFiles('/Users/ckl/dl/data/coins/single/')
-	
-	scaled,scaled_labels=[],[]
-	for label, img in zip(labels, imgs):
-		ready,_=extract_coins(img)
-		if ready is not None and len(ready)>0:
-			scaled.append(ready[0])
-			scaled_labels.append(label)
+def show(img):
+	cv2.imshow('xxx',img)
+	cv2.waitKey()
+
+def findLabel(id):
+	return label_dict.keys()[list(label_dict.values()).index(id)]
+
+def predict(classifier,img):
+	pred_input_fn=tf.estimator.inputs.numpy_input_fn(
+		x={'x':np.asarray([img],dtype=np.float32)},
+		num_epochs=1,
+		shuffle=False
+	)
+
+	predictions=list(classifier.predict(input_fn=pred_input_fn))
+	predicted_classes = [p["classes"] for p in predictions]
+	print predicted_classes
+	return predictions
+
+def init():
+	classifier=tf.estimator.Estimator(
+		model_fn=buildEstimator,
+		model_dir='/Users/ckl/tmp/br-coins'
+	)
+	return classifier
+
+def train(classifier):
+	scaled_raw, scaled_labels,id_to_name2 =readFiles(base)
+
 	labels=formatLabels(scaled_labels)
 
-	if 1==0:
-		labels=to_categorical(labels)
-		build2(scaled,labels)
+	print label_dict
 
-	else:
-		print 'labels: ',labels
-		classifier=tf.estimator.Estimator(
-			model_fn=buildEstimator,
-			model_dir='/Users/ckl/tmp/br-coins'
-		)
+	print 'labels: ',labels
+	classifier=init()
 
-		scaled=np.asarray(scaled,dtype=np.float32)
-		print len(labels)
+	scaled=np.asarray(scaled_raw,dtype=np.float32)
+	print len(labels)
 
-		labels=np.asarray(labels,dtype=np.int32)
+	labels=np.asarray(labels,dtype=np.int32)
 
-		train_input_fn=tf.estimator.inputs.numpy_input_fn(
-			x={"x":scaled},
-			y=labels,
-			batch_size=500,
-			num_epochs=10,
-			shuffle=True
-		)
-		tensors_to_log = {'train_accuracy': 'train_accuracy'}
-		logging_hook = tf.train.LoggingTensorHook(tensors=tensors_to_log, every_n_iter=5)
-		classifier.train(
-			input_fn=train_input_fn,
-			steps=100,
-			hooks=[logging_hook]
-		)
+	train_input_fn=tf.estimator.inputs.numpy_input_fn(
+		x={"x":scaled},
+		y=labels,
+		batch_size=500,
+		num_epochs=10,
+		shuffle=True
+	)
+	tensors_to_log = {'train_accuracy': 'train_accuracy'}
+	logging_hook = tf.train.LoggingTensorHook(tensors=tensors_to_log, every_n_iter=1)
+	classifier.train(
+		input_fn=train_input_fn,
+		steps=100,
+		hooks=[logging_hook]
+	)
+
+def next():
+	while True:
+		mlst=os.listdir(base)
+		idx=random.randint(0,len(mlst)-1)
+
+		img,label=read_extract(base,mlst[idx])
+		if img is not None:
+			return  img,label
+
+if __name__=='__main__':
+	
+	x=estimator.init()
+	estimator.train(x)
+
+	for i in range(100):
+		img,label=next()
+
+		print predict(est,img)
+
+		
+
+		
